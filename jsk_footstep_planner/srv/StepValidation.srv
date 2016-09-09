@@ -1,0 +1,13 @@
+jsk_footstep_msgs/Footstep[] footsteps
+## validation case
+bool collision
+bool step_projection
+## use localmovement for step projection
+bool local_move
+---
+bool success
+jsk_footstep_msgs/Footstep[] footsteps
+## failure information
+int32 index
+bool collision
+bool step_projection

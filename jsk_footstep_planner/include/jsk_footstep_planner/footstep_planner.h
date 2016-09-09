@@ -54,6 +54,7 @@
 #include "jsk_footstep_planner/footstep_astar_solver.h"
 #include "jsk_footstep_planner/footstep_parameters.h"
 #include <jsk_footstep_planner/CollisionBoundingBoxInfo.h>
+#include <jsk_footstep_planner/StepValidation.h>
 #include <jsk_interactive_marker/SnapFootPrint.h>
 
 namespace jsk_footstep_planner
@@ -116,6 +117,9 @@ namespace jsk_footstep_planner
     virtual bool projectFootPrintWithLocalSearchService(
       jsk_interactive_marker::SnapFootPrint::Request& req,
       jsk_interactive_marker::SnapFootPrint::Response& res);
+    virtual bool stepValidationService(
+      jsk_footstep_planner::StepValidation::Request& req,
+      jsk_footstep_planner::StepValidation::Response& res);
     virtual void publishText(ros::Publisher& pub,
                              const std::string& text,
                              PlanningStatus status);
@@ -131,6 +135,7 @@ namespace jsk_footstep_planner
     ros::ServiceServer srv_project_footprint_;
     ros::ServiceServer srv_project_footprint_with_local_search_;
     ros::ServiceServer srv_collision_bounding_box_info_;
+    ros::ServiceServer srv_step_validation_;
     pcl::PointCloud<pcl::PointNormal>::Ptr pointcloud_model_;
     pcl::PointCloud<pcl::PointXYZ>::Ptr obstacle_model_;
     FootstepGraph::Ptr graph_;

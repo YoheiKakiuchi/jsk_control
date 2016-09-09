@@ -62,6 +62,8 @@ namespace jsk_footstep_planner
       "project_footprint_with_local_search", &FootstepPlanner::projectFootPrintWithLocalSearchService, this);
     srv_collision_bounding_box_info_ = nh.advertiseService(
       "collision_bounding_box_info", &FootstepPlanner::collisionBoundingBoxInfoService, this);
+    srv_step_validation_ = nh.advertiseService(
+      "step_validation", &FootstepPlanner::stepValidationService, this);
     std::vector<double> lleg_footstep_offset, rleg_footstep_offset;
     if (jsk_topic_tools::readVectorParameter(nh, "lleg_footstep_offset", lleg_footstep_offset)) {
       inv_lleg_footstep_offset_ = Eigen::Vector3f(- lleg_footstep_offset[0],
@@ -268,6 +270,27 @@ namespace jsk_footstep_planner
                   ERROR);
       return false;
     }
+  }
+
+  bool FootstepPlanner::stepValidationService(
+      jsk_footstep_planner::StepValidation::Request& req,
+      jsk_footstep_planner::StepValidation::Response& res)
+  {
+    res.success = false;
+
+    boost::mutex::scoped_lock lock(mutex_);
+    if (!graph_) {
+
+      return false;
+    }
+    if (!pointcloud_model_) {
+
+      return false;
+    }
+
+
+
+    return true;
   }
 
   void FootstepPlanner::publishText(ros::Publisher& pub,
