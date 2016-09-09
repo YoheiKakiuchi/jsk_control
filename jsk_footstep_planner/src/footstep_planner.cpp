@@ -62,6 +62,17 @@ namespace jsk_footstep_planner
       "project_footprint_with_local_search", &FootstepPlanner::projectFootPrintWithLocalSearchService, this);
     srv_collision_bounding_box_info_ = nh.advertiseService(
       "collision_bounding_box_info", &FootstepPlanner::collisionBoundingBoxInfoService, this);
+    std::vector<double> lleg_footstep_offset, rleg_footstep_offset;
+    if (jsk_topic_tools::readVectorParameter(nh, "lleg_footstep_offset", lleg_footstep_offset)) {
+      inv_lleg_footstep_offset_ = Eigen::Vector3f(- lleg_footstep_offset[0],
+                                                  - lleg_footstep_offset[1],
+                                                  - lleg_footstep_offset[2]);
+    }
+    if (jsk_topic_tools::readVectorParameter(nh, "rleg_footstep_offset", rleg_footstep_offset)) {
+      inv_rleg_footstep_offset_ = Eigen::Vector3f(- rleg_footstep_offset[0],
+                                                  - rleg_footstep_offset[1],
+                                                  - rleg_footstep_offset[2]);
+    }
     {
       boost::mutex::scoped_lock lock(mutex_);
       if (!readSuccessors(nh)) {
@@ -351,10 +362,28 @@ namespace jsk_footstep_planner
       as_.setPreempted();
       return;
     }
-    FootstepState::Ptr first_goal = FootstepState::fromROSMsg(goal->goal_footstep.footsteps[0],
+    std::vector<jsk_footstep_msgs::Footstep > goal_ros;
+    goal_ros.push_back(goal->goal_footstep.footsteps[0]);
+    goal_ros.push_back(goal->goal_footstep.footsteps[1]);
+    for (int i = 0; i < 2; i++) {
+      if (goal_ros[i].offset.x == 0.0 &&
+          goal_ros[i].offset.y == 0.0 &&
+          goal_ros[i].offset.z == 0.0 ) {
+        if (goal_ros[i].leg == jsk_footstep_msgs::Footstep::LEFT) {
+          goal_ros[i].offset.x = - inv_lleg_footstep_offset_[0];
+          goal_ros[i].offset.y = - inv_lleg_footstep_offset_[1];
+          goal_ros[i].offset.z = - inv_lleg_footstep_offset_[2];
+        } else {
+          goal_ros[i].offset.x = - inv_rleg_footstep_offset_[0];
+          goal_ros[i].offset.y = - inv_rleg_footstep_offset_[1];
+          goal_ros[i].offset.z = - inv_rleg_footstep_offset_[2];
+        }
+      }
+    }
+    FootstepState::Ptr first_goal = FootstepState::fromROSMsg(goal_ros[0],
                                                               footstep_size,
                                                               search_resolution);
-    FootstepState::Ptr second_goal = FootstepState::fromROSMsg(goal->goal_footstep.footsteps[1],
+    FootstepState::Ptr second_goal = FootstepState::fromROSMsg(goal_ros[1],
                                                                footstep_size,
                                                                search_resolution);
     if (!graph_->isSuccessable(second_goal, first_goal)) {
@@ -373,10 +402,24 @@ namespace jsk_footstep_planner
     ////////////////////////////////////////////////////////////////////
     // set start state
     // 0 is always start
-    Eigen::Affine3f start_pose;
-    tf::poseMsgToEigen(goal->initial_footstep.footsteps[0].pose, start_pose);
+    //Eigen::Affine3f start_pose;
+    //tf::poseMsgToEigen(goal->initial_footstep.footsteps[0].pose, start_pose);
+    jsk_footstep_msgs::Footstep start_ros = goal->initial_footstep.footsteps[0];
+    if (start_ros.offset.x == 0.0 &&
+        start_ros.offset.y == 0.0 &&
+        start_ros.offset.z == 0.0 ) {
+      if (start_ros.leg == jsk_footstep_msgs::Footstep::LEFT) {
+        start_ros.offset.x = - inv_lleg_footstep_offset_[0];
+        start_ros.offset.y = - inv_lleg_footstep_offset_[1];
+        start_ros.offset.z = - inv_lleg_footstep_offset_[2];
+      } else {
+        start_ros.offset.x = - inv_rleg_footstep_offset_[0];
+        start_ros.offset.y = - inv_rleg_footstep_offset_[1];
+        start_ros.offset.z = - inv_rleg_footstep_offset_[2];
+      }
+    }
     FootstepState::Ptr start(FootstepState::fromROSMsg(
-                               goal->initial_footstep.footsteps[0],
+                               start_ros,
                                footstep_size,
                                search_resolution));
     graph_->setStartState(start);
@@ -395,9 +438,9 @@ namespace jsk_footstep_planner
     ////////////////////////////////////////////////////////////////////
     // set goal state
     jsk_footstep_msgs::Footstep left_goal, right_goal;
-    for (size_t i = 0; i < goal->goal_footstep.footsteps.size(); i++) {
+    for (size_t i = 0; i < goal_ros.size(); i++) {
       FootstepState::Ptr goal_state(FootstepState::fromROSMsg(
-                                      goal->goal_footstep.footsteps[i],
+                                      goal_ros[i],
                                       footstep_size,
                                       Eigen::Vector3f(resolution_x_,
                                                       resolution_y_,
@@ -521,7 +564,12 @@ namespace jsk_footstep_planner
     jsk_footstep_msgs::FootstepArray ros_path;
     ros_path.header = goal->goal_footstep.header;
     for (size_t i = 0; i < path.size(); i++) {
-      ros_path.footsteps.push_back(*path[i]->getState()->toROSMsg());
+      const FootstepState::Ptr st = path[i]->getState();
+      if (st->getLeg() == jsk_footstep_msgs::Footstep::LEFT) {
+        ros_path.footsteps.push_back(*(st->toROSMsg(inv_lleg_footstep_offset_)));
+      } else {
+        ros_path.footsteps.push_back(*(st->toROSMsg(inv_rleg_footstep_offset_)));
+      }
     }
     // finalize path
     if (path[path.size() - 1]->getState()->getLeg() == jsk_footstep_msgs::Footstep::LEFT) {
