@@ -95,9 +95,9 @@ int main(int argc, char** argv)
   Eigen::Vector3f ft;
   double distance_to_goal, alp;
   int idx;
-  double dist = la.distanceToPoint(q, ft, distance_to_goal, idx, alp);
+  double dist = la.distanceWithInfo(q, ft, distance_to_goal, idx, alp);
 
-  la.print();
+  std::cerr << la << std::endl;
 
   ROS_INFO("dist = %f, foot = [%f %f %f] (%d on %f), to_goal = %f\n",
            dist, ft[0], ft[1], ft[2], idx, alp,
