@@ -75,6 +75,8 @@ add_dependencies(jsk_footstep_planner ${PROJECT_NAME}_gencpp ${PROJECT_NAME}_gen
 add_dependencies(footstep_planner_node ${PROJECT_NAME}_gencpp ${PROJECT_NAME}_gencfg)
 add_dependencies(pointcloud_model_generator_node ${PROJECT_NAME}_gencpp ${PROJECT_NAME}_gencfg)
 
+add_executable(grid_search_test src/grid_search_test.cpp)
+
 install(DIRECTORY euslisp launch scripts
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
   USE_SOURCE_PERMISSIONS
