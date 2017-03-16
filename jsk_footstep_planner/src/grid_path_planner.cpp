@@ -1,24 +1,33 @@
 // -*- mode: c++ -*-
 
-#include "jsk_footstep_planner/footstep_planner.h"
+#include "jsk_footstep_planner/grid_path_planner.h"
+
+//param
+#include <jsk_topic_tools/rosparam_utils.h>
+
+#include <jsk_recognition_utils/pcl_conversion_util.h> // kdtree
+
+#include <visualization_msgs/MarkerArray.h>
+#include <jsk_recognition_utils/geo/polyline.h>
 
 namespace jsk_footstep_planner
 {
   GridPathPlanner::GridPathPlanner(ros::NodeHandle& nh):
     as_(nh, nh.getNamespace(),
-        boost::bind(&GridPathPlanner::planCB, this, _1), false)
+        boost::bind(&GridPathPlanner::planCB, this, _1), false),
+    plane_tree_(new pcl::KdTreeFLANN<pcl::PointNormal>),
+    obstacle_tree_(new pcl::KdTreeFLANN<pcl::PointXYZ>)
   {
     pub_text_ = nh.advertise<jsk_rviz_plugins::OverlayText> ("text", 1, true);
+    pub_marker_ = nh.advertise<visualization_msgs::MarkerArray> ("grid_graph_marker", 2, true);
     pub_close_list_ = nh.advertise<sensor_msgs::PointCloud2> ("close_list", 1, true);
     pub_open_list_  = nh.advertise<sensor_msgs::PointCloud2> ("open_list", 1, true);
 
     srv_collision_bounding_box_info_ = nh.advertiseService(
       "collision_bounding_box_info", &GridPathPlanner::collisionBoundingBoxInfoService, this);
 
-    buildGraph(); //
-
-    sub_pointcloud_model_ = nh.subscribe("pointcloud_model", 1, &GridPathPlanner::pointcloudCallback, this);
-    sub_obstacle_model_   = nh.subscribe("obstacle_model", 1, &GridPathPlanner::obstacleCallback, this);
+    sub_plane_points_ = nh.subscribe("plane_points", 1, &GridPathPlanner::pointcloudCallback, this);
+    sub_obstacle_points_   = nh.subscribe("obstacle_points", 1, &GridPathPlanner::obstacleCallback, this);
 
     std::vector<double> collision_bbox_size, collision_bbox_offset;
     if (jsk_topic_tools::readVectorParameter(nh, "collision_bbox_size", collision_bbox_size)) {
@@ -31,32 +40,61 @@ namespace jsk_footstep_planner
                                                                                   collision_bbox_offset[1],
                                                                                   collision_bbox_offset[2]);
     }
+
+    nh.param("map_resolution", map_resolution_, 0.4);
+    ROS_INFO("map resolution: %f", map_resolution_);
+    nh.param("collision_circle_radius", collision_circle_radius_, 0.35);
+    nh.param("collision_circle_min_height", collision_circle_min_height_, 0.4);
+    nh.param("collision_circle_max_height", collision_circle_max_height_, 1.9);
+    use_obstacle_points_ = true;
+    use_plane_points_ = true;
+
     as_.start();
+  }
+
+  void GridPathPlanner::buildGraph()
+  {
+    //boost::mutex::scoped_lock lock(mutex_);
+    ROS_INFO("build plane %d", plane_points_->points.size());
+    Eigen::Vector4f minpt, maxpt;
+    pcl::getMinMax3D<pcl::PointNormal> (*plane_points_, minpt, maxpt);
+
+    Eigen::Vector4f len = maxpt - minpt;
+    map_offset_[0] = minpt[0];
+    map_offset_[1] = minpt[1];
+    map_offset_[2] = 0.0;
+    int sizex = (int)(len[0] / map_resolution_);
+    int sizey = (int)(len[1] / map_resolution_);
+
+    ROS_INFO("min_point: [%f, %f] / size: %d %d",
+             map_offset_[0], map_offset_[1], sizex, sizey);
+
+    obstacle_tree_->setInputCloud(obstacle_points_);
+    plane_tree_->setInputCloud(plane_points_);
+
+    gridmap_.reset(new GridMap(sizex, sizey));
+    gridmap_->setCostFunction(boost::bind(&GridPathPlanner::updateCost, this, _1));
+    graph_.reset(new Graph(gridmap_));
   }
 
   void GridPathPlanner::obstacleCallback(const sensor_msgs::PointCloud2::ConstPtr& msg)
   {
     boost::mutex::scoped_lock lock(mutex_);
-    ROS_DEBUG("obstacle model is updated");
-    obstacle_model_.reset(new pcl::PointCloud<pcl::PointXYZ>);
-    pcl::fromROSMsg(*msg, *obstacle_model_);
-    // obstacle_model_frame_id_ = msg->header.frame_id; // check frame_id
-
-    if (gridmap_ && use_obstacle_model_) {
-      gridmap_->setObstacleModel(obstacle_model_);
-    }
+    //ROS_DEBUG("obstacle points is updated");
+    ROS_INFO("obstacle points is updated");
+    obstacle_points_.reset(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::fromROSMsg(*msg, *obstacle_points_);
+    obstacle_points_frame_id_ = msg->header.frame_id; // check frame_id
   }
 
   void GridPathPlanner::pointcloudCallback(const sensor_msgs::PointCloud2::ConstPtr& msg)
   {
     boost::mutex::scoped_lock lock(mutex_);
-    ROS_DEBUG("pointcloud model is updated");
-    pointcloud_model_.reset(new pcl::PointCloud<pcl::PointNormal>);
-    pcl::fromROSMsg(*msg, *pointcloud_model_);
-    //pointcloud_model_frame_id_ = msg->header.frame_id; // check frame_id
-    if (gridmap_ && use_pointcloud_model_) {
-      gridmap_->setPointCloudModel(pointcloud_model_);
-    }
+    //ROS_DEBUG("pointcloud points is updated");
+    ROS_INFO("pointcloud points is updated");
+    plane_points_.reset(new pcl::PointCloud<pcl::PointNormal>);
+    pcl::fromROSMsg(*msg, *plane_points_);
+    plane_points_frame_id_ = msg->header.frame_id; // check frame_id
   }
 
   bool GridPathPlanner::collisionBoundingBoxInfoService(
@@ -121,34 +159,147 @@ namespace jsk_footstep_planner
     // check frame_id sanity
     std::string goal_frame_id = goal->initial_footstep.header.frame_id;
 #if 0
-    if (use_pointcloud_model_) {
+    if (use_plane_points_) {
       // check perception cloud header
-      if (goal_frame_id != pointcloud_model_frame_id_) {
+      if (goal_frame_id != plane_points_frame_id_) {
         ROS_ERROR("frame_id of goal and pointcloud do not match. goal: %s, pointcloud: %s.",
-                      goal_frame_id.c_str(), pointcloud_model_frame_id_.c_str());
+                      goal_frame_id.c_str(), plane_points_frame_id_.c_str());
         as_.setPreempted();
         return;
       }
     }
-    if (use_obstacle_model_) {
+    if (use_obstacle_points_) {
       // check perception cloud header
-      if (goal_frame_id != obstacle_model_frame_id_) {
+      if (goal_frame_id != obstacle_points_frame_id_) {
         ROS_ERROR("frame_id of goal and obstacle pointcloud do not match. goal: %s, obstacle: %s.",
-                      goal_frame_id.c_str(), obstacle_model_frame_id_.c_str());
+                      goal_frame_id.c_str(), obstacle_points_frame_id_.c_str());
         as_.setPreempted();
         return;
       }
     }
 #endif
+    double initx = 0;
+    double inity = 0;
+    double goalx = 0;
+    double goaly = 0;
+    for(int i = 0; i < goal->initial_footstep.footsteps.size(); i++) {
+      initx += goal->initial_footstep.footsteps[i].pose.position.x;
+      inity += goal->initial_footstep.footsteps[i].pose.position.y;
+    }
+    initx /= goal->initial_footstep.footsteps.size();
+    inity /= goal->initial_footstep.footsteps.size();
+    for(int i = 0; i < goal->goal_footstep.footsteps.size(); i++) {
+      goalx += goal->goal_footstep.footsteps[i].pose.position.x;
+      goaly += goal->goal_footstep.footsteps[i].pose.position.y;
+    }
+    goalx /= goal->initial_footstep.footsteps.size();
+    goaly /= goal->initial_footstep.footsteps.size();
 
-    result_.result = ros_path;
-    as_.setSucceeded(result_);
+    ROS_INFO("start: %f %f, goal %f %f", initx, inity, goalx, goaly);
 
+    ROS_INFO("build graph");
+    buildGraph();
+
+    ROS_INFO("solve");
+    Eigen::Vector3f startp(initx, inity, 0);
+    Eigen::Vector3f goalp(goalx, goaly, 0);
+    int sx, sy, gx, gy;
+    pointToGrid(startp, sx, sy);
+    pointToGrid(goalp, gx, gy);
+
+    if(!gridmap_->inRange(sx, sy)) {
+      ROS_ERROR("start is not in range %d %d", sx, sy);
+      as_.setPreempted();
+      return;
+    }
+
+    if(!gridmap_->inRange(gx, gy)) {
+      ROS_ERROR("goal is not in range %d %d", gx, gy);
+      as_.setPreempted();
+      return;
+    }
+
+    GridState::Ptr start_state = graph_->getState(sx, sy);
+    GridState::Ptr goal_state = graph_->getState(gx, gy);
+
+    if(start_state->getOccupancy() != 0) {
+      ROS_ERROR("start state is occupied");
+      as_.setPreempted();
+      return;
+    }
+    if(goal_state->getOccupancy() != 0) {
+      ROS_ERROR("goal state is occupied");
+      as_.setPreempted();
+      return;
+    }
+
+    graph_->setStartState(start_state);
+    graph_->setGoalState(goal_state);
+
+    Solver solver(graph_);
+    //solver.setHeuristic(boost::bind(&gridPerceptionHeuristicDistance, _1, _2));
+    solver.setHeuristic(boost::bind(&GridPathPlanner::heuristicDistance, this, _1, _2));
+
+    Solver::Path path = solver.solve();
+    std::vector<Eigen::Vector3f > points;
+    for(int i = 0; i < path.size(); i++) {
+      //Solver::StatePtr st = path[i]->getState();
+      int ix = path[i]->getState()->indexX();
+      int iy = path[i]->getState()->indexY();
+      Eigen::Vector3f p;
+      gridToPoint(ix, iy, p);
+      points.push_back(p);
+      ROS_INFO("path %d (%f %f) [%d - %d]", i, ix, iy, p[0], p[1]);
+    }
+    {
+      jsk_recognition_utils::PolyLine pl(points);
+      visualization_msgs::MarkerArray ma;
+      visualization_msgs::Marker m;
+      pl.toMarker(m);
+      m.header.frame_id = "map";
+      m.id = 101;
+      m.scale.x = 0.05;
+      ma.markers.push_back(m);
+      pub_marker_.publish(ma);
+    }
+    ROS_INFO("pub marker");
+    publishMarker();
+
+    {
+      jsk_footstep_msgs::PlanFootstepsResult result_;
+      result_.result.header = goal->goal_footstep.header;
+
+      std::vector<Eigen::Vector3f > points;
+      for(int i = 0; i < path.size(); i++) {
+        int ix = path[i]->getState()->indexX();
+        int iy = path[i]->getState()->indexY();
+        Eigen::Vector3f p;
+        gridToPoint(ix, iy, p);
+        jsk_footstep_msgs::Footstep fs;
+        fs.leg = jsk_footstep_msgs::Footstep::LLEG;
+        fs.dimensions.x = map_resolution_;
+        fs.dimensions.y = map_resolution_;
+        fs.dimensions.z = 0.01;
+        fs.pose.orientation.x = 0;
+        fs.pose.orientation.y = 0;
+        fs.pose.orientation.z = 0;
+        fs.pose.orientation.w = 1;
+        fs.pose.position.x = p[0];
+        fs.pose.position.y = p[1];
+        fs.pose.position.z = p[2];
+        result_.result.footsteps.push_back(fs);
+      }
+      as_.setSucceeded(result_);
+    }
+
+#if 0
     pcl::PointCloud<pcl::PointXYZRGB> close_list_cloud, open_list_cloud;
     //solver.openListToPointCloud(open_list_cloud);
     //solver.closeListToPointCloud(close_list_cloud);
     publishPointCloud(close_list_cloud, pub_close_list_, goal->goal_footstep.header);
     publishPointCloud(open_list_cloud,  pub_open_list_,  goal->goal_footstep.header);
+#endif
+
 #if 0
     publishText(pub_text_,
                 (boost::format("Took %f sec\nPerception took %f sec\nPlanning took %f sec\n%lu path\nopen list: %lu\nclose list:%lu")
@@ -159,7 +310,7 @@ namespace jsk_footstep_planner
                  % open_list_cloud.points.size()
                  % close_list_cloud.points.size()).str(),
                 OK);
-    ROS_INFO_STREAM("use_obstacle_model: " << graph_->useObstacleModel());
+    ROS_INFO_STREAM("use_obstacle_points: " << graph_->useObstaclePoints());
 #endif
   }
 
@@ -174,269 +325,124 @@ namespace jsk_footstep_planner
     pub.publish(ros_cloud);
   }
 
-  void GridPathPlanner::profile(FootstepAStarSolver<FootstepGraph>& solver, FootstepGraph::Ptr graph)
+  bool GridPathPlanner::updateCost(GridState::Ptr ptr)
   {
-    if (as_.isPreemptRequested()) {
-      solver.cancelSolve();
-      ROS_WARN("cancelled!");
-    }
-    // ROS_INFO("open list: %lu", solver.getOpenList().size());
-    // ROS_INFO("close list: %lu", solver.getCloseList().size());
-    publishText(pub_text_,
-                (boost::format("open_list: %lu\nclose list:%lu")
-                 % (solver.getOpenList().size()) % (solver.getCloseList().size())).str(),
-                OK);
-    if (rich_profiling_) {
-      pcl::PointCloud<pcl::PointNormal> close_list_cloud, open_list_cloud;
-      solver.openListToPointCloud(open_list_cloud);
-      solver.closeListToPointCloud(close_list_cloud);
-      publishPointCloud(close_list_cloud, pub_close_list_, latest_header_);
-      publishPointCloud(open_list_cloud, pub_open_list_, latest_header_);
-    }
-  }
-  
-  double GridPathPlanner::stepCostHeuristic(
-    SolverNode<FootstepState, FootstepGraph>::Ptr node, FootstepGraph::Ptr graph)
-  {
-    return footstepHeuristicStepCost(node, graph, heuristic_first_rotation_weight_,
-                                     heuristic_second_rotation_weight_);
-  }
-
-  double GridPathPlanner::zeroHeuristic(
-    SolverNode<FootstepState, FootstepGraph>::Ptr node, FootstepGraph::Ptr graph)
-  {
-    return footstepHeuristicZero(node, graph);
-  }
-
-  double GridPathPlanner::straightHeuristic(
-    SolverNode<FootstepState, FootstepGraph>::Ptr node, FootstepGraph::Ptr graph)
-  {
-    return footstepHeuristicStraight(node, graph);
-  }
-
-  double GridPathPlanner::straightRotationHeuristic(
-    SolverNode<FootstepState, FootstepGraph>::Ptr node, FootstepGraph::Ptr graph)
-  {
-    return footstepHeuristicStraightRotation(node, graph);
-  }
-
-  double GridPathPlanner::followPathLineHeuristic(
-    SolverNode<FootstepState, FootstepGraph>::Ptr node, FootstepGraph::Ptr graph)
-  {
-    return footstepHeuristicFollowPathLine(node, graph);
-  }
-
-  /**
-     format is
-       successors:
-         - x: 0
-           y: 0
-           theta: 0
-         - x: 0
-           y: 0
-           theta: 0
-         ...
-   */
-  bool GridPathPlanner::readSuccessors(ros::NodeHandle& nh)
-  {
-    successors_.clear();
-    if (!nh.hasParam("successors")) {
-      ROS_FATAL("no successors are specified");
-      return false;
-    }
-    // read default translation from right foot to left foot
-    double default_x   = 0.0;
-    double default_y   = 0.0;
-    double default_theta = 0.0;
-    if (nh.hasParam("default_lfoot_to_rfoot_offset")) {
-      std::vector<double> default_offset;
-      if (jsk_topic_tools::readVectorParameter(nh, "default_lfoot_to_rfoot_offset", default_offset)) {
-        default_x =     default_offset[0];
-        default_y =     default_offset[1];
-        default_theta = default_offset[2];
-      }
-    }
-    // read successors
-    XmlRpc::XmlRpcValue successors_xml;
-    nh.param("successors", successors_xml, successors_xml);
-    if (successors_xml.getType() != XmlRpc::XmlRpcValue::TypeArray)
+    // determine occupancy
+    if(use_obstacle_points_)
     {
-      ROS_FATAL("successors should be an array");
-      return false;
-    }
-    for (size_t i_successors = 0; i_successors < successors_xml.size(); i_successors++) {
-      XmlRpc::XmlRpcValue successor_xml;
-      successor_xml = successors_xml[i_successors];
-      if (successor_xml.getType() != XmlRpc::XmlRpcValue::TypeStruct) {
-        ROS_FATAL("element of successors should be an dictionary");
-        return false;
+      Eigen::Vector3f p;
+      gridToPoint(ptr->indexX(), ptr->indexY(), p);
+
+      double pos0 = collision_circle_min_height_ + collision_circle_radius_;
+      //double pos1 = collision_circle_max_height_ - collision_circle_radius_;
+      int size = 0;
+      std::vector<double> pos;
+      pos.push_back(pos0);
+
+      for(std::vector<double>::iterator it = pos.begin();
+          it != pos.end(); it++) {
+        std::vector<int> near_indices;
+        std::vector<float> distances;
+        pcl::PointXYZ center;
+        p[2] = *it;
+        center.getVector3fMap() = p;
+
+        obstacle_tree_->radiusSearch(center, collision_circle_radius_, near_indices, distances);
+
+        //std::cerr << "oz: " << near_indices.size() << std::endl;
+        size += near_indices.size();
       }
-      double x = 0;
-      double y = 0;
-      double theta = 0;
-      if (successor_xml.hasMember("x")) {
-        x = jsk_topic_tools::getXMLDoubleValue(successor_xml["x"]);
-        x += default_x;
+      if(size > 1) { // TODO: occupancy_threshold
+        ptr->setOccupancy(1);
+      } else {
+        ptr->setOccupancy(0);
       }
-      if (successor_xml.hasMember("y")) {
-        y = jsk_topic_tools::getXMLDoubleValue(successor_xml["y"]);
-        y += default_y;
+    }
+
+    // determine cost
+    if(use_plane_points_)
+    {
+      Eigen::Vector3f p;
+      gridToPoint(ptr->indexX(), ptr->indexY(), p);
+
+      std::vector<int> plane_indices;
+      std::vector<float> distances;
+      pcl::PointNormal center;
+      center.getVector3fMap() = p;
+      plane_tree_->radiusSearch(center, map_resolution_ * 1.4, plane_indices, distances);
+      //std::cerr << "ps: " << plane_indices.size() << std::endl;
+      // TODO: point num / point average / point deviation
+      double cost = 0.0;
+      if (plane_indices.size() < 50) { // TODO: plane threshold
+        ptr->setOccupancy(2 + ptr->getOccupancy());
       }
-      if (successor_xml.hasMember("theta")) {
-        theta = jsk_topic_tools::getXMLDoubleValue(successor_xml["theta"]);
-        theta += default_theta;
-      }
-      Eigen::Affine3f successor =
-        Eigen::Translation3f(inv_lleg_footstep_offset_[0],
-                             inv_lleg_footstep_offset_[1],
-                             inv_lleg_footstep_offset_[2]) *
-        affineFromXYYaw(x, y, theta) *
-        Eigen::Translation3f(-inv_rleg_footstep_offset_[0],
-                             -inv_rleg_footstep_offset_[1],
-                             -inv_rleg_footstep_offset_[2]);
-      successors_.push_back(successor);
+      ptr->setCost(cost);
     }
-    ROS_INFO("%lu successors are defined", successors_.size());
-    if ((default_x != 0.0) || (default_y != 0.0) || (default_theta != 0.0)) {
-      ROS_INFO("default_offset: #f(%f %f %f)", default_x, default_y, default_theta);
-    }
-    if ((inv_lleg_footstep_offset_[0] != 0) ||
-        (inv_lleg_footstep_offset_[1] != 0) ||
-        (inv_lleg_footstep_offset_[2] != 0) ) {
-      ROS_INFO("left_leg_offset: #f(%f %f %f)",
-               - inv_lleg_footstep_offset_[0],
-               - inv_lleg_footstep_offset_[1],
-               - inv_lleg_footstep_offset_[2]);
-    }
-    if ((inv_rleg_footstep_offset_[0] != 0) ||
-        (inv_rleg_footstep_offset_[1] != 0) ||
-        (inv_rleg_footstep_offset_[2] != 0) ) {
-      ROS_INFO("right_leg_offset: #f(%f %f %f)",
-               - inv_rleg_footstep_offset_[0],
-               - inv_rleg_footstep_offset_[1],
-               - inv_rleg_footstep_offset_[2]);
-    }
-    for (size_t i = 0; i < successors_.size(); i++) {
-      Eigen::Vector3f tr = successors_[i].translation();
-      float roll, pitch, yaw;
-      pcl::getEulerAngles(successors_[i], roll, pitch, yaw);
-      ROS_INFO("successor_%2.2d: (make-coords :pos (scale 1000 #f(%f %f 0)) :rpy (list %f 0 0))", i, tr[0], tr[1], yaw);
-    }
-    return true;
+
+    return false;
   }
 
-  void GridPathPlanner::configCallback(Config &config, uint32_t level)
+  void GridPathPlanner::publishMarker()
   {
-    boost::mutex::scoped_lock lock(mutex_);
-    bool need_to_rebuild_graph = false;
-    if (use_pointcloud_model_ != config.use_pointcloud_model) {
-      use_pointcloud_model_ = config.use_pointcloud_model;
-      need_to_rebuild_graph = true;
-    }
-    if (use_lazy_perception_ != config.use_lazy_perception) {
-      use_lazy_perception_ = config.use_lazy_perception;
-      need_to_rebuild_graph = true;
-    }
-    if (use_local_movement_ != config.use_local_movement) {
-      use_local_movement_ = config.use_local_movement;
-      need_to_rebuild_graph = true;
-    }
-    if (resolution_x_ != config.resolution_x) {
-      resolution_x_ = config.resolution_x;
-      need_to_rebuild_graph = true;
-    }
-    if (resolution_y_ != config.resolution_y) {
-      resolution_y_ = config.resolution_y;
-      need_to_rebuild_graph = true;
-    }
-    if (resolution_theta_ != config.resolution_theta) {
-      resolution_theta_ = config.resolution_theta;
-      need_to_rebuild_graph = true;
-    }
-    planning_timeout_ = config.planning_timeout;
-    rich_profiling_ = config.rich_profiling;
-    parameters_.use_transition_limit = config.use_transition_limit;
-    parameters_.use_global_transition_limit = config.use_global_transition_limit;
-    parameters_.local_move_x = config.local_move_x;
-    parameters_.local_move_y = config.local_move_y;
-    parameters_.local_move_theta = config.local_move_theta;
-    parameters_.local_move_x_num = config.local_move_x_num;
-    parameters_.local_move_y_num = config.local_move_y_num;
-    parameters_.local_move_theta_num = config.local_move_theta_num;
-    parameters_.local_move_x_offset = config.local_move_x_offset;
-    parameters_.local_move_y_offset = config.local_move_y_offset;
-    parameters_.local_move_theta_offset = config.local_move_theta_offset;
-    parameters_.transition_limit_x = config.transition_limit_x;
-    parameters_.transition_limit_y = config.transition_limit_y;
-    parameters_.transition_limit_z = config.transition_limit_z;
-    parameters_.transition_limit_roll = config.transition_limit_roll;
-    parameters_.transition_limit_pitch = config.transition_limit_pitch;
-    parameters_.transition_limit_yaw = config.transition_limit_yaw;
-    parameters_.global_transition_limit_roll = config.global_transition_limit_roll;
-    parameters_.global_transition_limit_pitch = config.global_transition_limit_pitch;
-    parameters_.goal_pos_thr = config.goal_pos_thr;
-    parameters_.goal_rot_thr = config.goal_rot_thr;
-    parameters_.plane_estimation_use_normal              = config.plane_estimation_use_normal;
-    parameters_.plane_estimation_normal_distance_weight  = config.plane_estimation_normal_distance_weight;
-    parameters_.plane_estimation_normal_opening_angle    = config.plane_estimation_normal_opening_angle;
-    parameters_.plane_estimation_min_ratio_of_inliers    = config.plane_estimation_min_ratio_of_inliers;
-    parameters_.plane_estimation_max_iterations = config.plane_estimation_max_iterations;
-    parameters_.plane_estimation_min_inliers = config.plane_estimation_min_inliers;
-    parameters_.plane_estimation_outlier_threshold = config.plane_estimation_outlier_threshold;
-    parameters_.support_check_x_sampling = config.support_check_x_sampling;
-    parameters_.support_check_y_sampling = config.support_check_y_sampling;
-    parameters_.support_check_vertex_neighbor_threshold = config.support_check_vertex_neighbor_threshold;
-    parameters_.support_padding_x = config.support_padding_x;
-    parameters_.support_padding_y = config.support_padding_y;
-    parameters_.skip_cropping = config.skip_cropping;
-    footstep_size_x_ = config.footstep_size_x;
-    footstep_size_y_ = config.footstep_size_y;
-    project_start_state_ = config.project_start_state;
-    project_goal_state_ = config.project_goal_state;
-    close_list_x_num_ = config.close_list_x_num;
-    close_list_y_num_ = config.close_list_y_num;
-    close_list_theta_num_ = config.close_list_theta_num;
-    profile_period_ = config.profile_period;
-    heuristic_ = config.heuristic;
-    heuristic_first_rotation_weight_ = config.heuristic_first_rotation_weight;
-    heuristic_second_rotation_weight_ = config.heuristic_second_rotation_weight;
-    cost_weight_ = config.cost_weight;
-    heuristic_weight_ = config.heuristic_weight;
-    if (use_obstacle_model_ != config.use_obstacle_model) {
-      use_obstacle_model_ = config.use_obstacle_model;
-      need_to_rebuild_graph = true;
-    }
-    parameters_.obstacle_resolution = config.obstacle_resolution;
-    if (need_to_rebuild_graph) {
-      if (graph_) {             // In order to skip first initialization
-        ROS_INFO("re-building graph");
-        buildGraph();
-      }
-    }
-  }
-  
-  void GridPathPlanner::buildGraph()
-  {
-    graph_.reset(new FootstepGraph(Eigen::Vector3f(resolution_x_,
-                                                   resolution_y_,
-                                                   resolution_theta_),
-                                   use_pointcloud_model_,
-                                   use_lazy_perception_,
-                                   use_local_movement_,
-                                   use_obstacle_model_));
-    if (use_pointcloud_model_ && pointcloud_model_) {
-      graph_->setPointCloudModel(pointcloud_model_);
-    }
-    if (use_obstacle_model_ && obstacle_model_) {
-      graph_->setObstacleModel(obstacle_model_);
-    }
-    //graph_->setObstacleResolution(parameters_.obstacle_resolution);
-    graph_->setParameters(parameters_);
-    graph_->setBasicSuccessors(successors_);
-  }
+    visualization_msgs::MarkerArray ma;
 
-  void GridPathPlanner::setHeuristicPathLine(jsk_recognition_utils::PolyLine &path_line)
-  {
-    graph_->setHeuristicPathLine(path_line); // copy ???
+    int sx = gridmap_->sizeX();
+    int sy = gridmap_->sizeY();
+
+    { // state plane
+      visualization_msgs::Marker m;
+      m.header.frame_id = "map";
+      m.type = visualization_msgs::Marker::CUBE_LIST;
+      m.id = 100;
+      m.scale.x = map_resolution_;
+      m.scale.y = map_resolution_;
+      m.scale.z = 0.01;
+      m.color.r = 0.0;
+      m.color.g = 0.0;
+      m.color.b = 1.0;
+      m.color.a = 1.0;
+
+      for(int y = 0; y < sy; y++) {
+        for(int x = 0; x < sx; x++) {
+          GridState::Ptr st = graph_->getState(x, y);
+          Eigen::Vector3f p;
+          gridToPoint(x, y, p);
+          p[2] = -0.005;
+          geometry_msgs::Point gp;
+          gp.x = p[0];
+          gp.y = p[1];
+          gp.z = p[2];
+          m.points.push_back(gp);
+
+          std_msgs::ColorRGBA col;
+          if(st->getOccupancy() == 1) {
+            col.r = 0.0;
+            col.g = 0.15;
+            col.b = 0.0;
+            col.a = 1.0;
+          } else if(st->getOccupancy() == 2) {
+            col.r = 0.0;
+            col.g = 0.0;
+            col.b = 0.0;
+            col.a = 1.0;
+          } else if(st->getOccupancy() == 3) {
+            col.r = 0.15;
+            col.g = 0.0;
+            col.b = 0.0;
+            col.a = 1.0;
+          } else {
+            col.r = 0.0;
+            col.g = 0.0;
+            col.b = 1.0;
+            col.a = 1.0;
+          }
+
+          m.colors.push_back(col);
+        }
+      }
+      ma.markers.push_back(m);
+    }
+
+    pub_marker_.publish(ma);
   }
 }

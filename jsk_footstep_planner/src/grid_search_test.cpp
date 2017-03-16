@@ -48,13 +48,13 @@ int grid[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  0, 0
               0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0, 0, 1,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 using namespace jsk_footstep_planner;
-//typedef GridMap<GridState> map_type;
-//typedef GridGraph<GridState> graph_type;
+
+typedef OccupancyGridMap MAPT;
+typedef OccupancyGridGraph GRAPHT;
 
 namespace jsk_footstep_planner {
-#if 0
-  double gridHeuristicZero(SolverNode<GridState, OccupancyGridGraph>::Ptr node,
-                           OccupancyGridGraph::Ptr graph) {
+  double gridHeuristicZero(SolverNode<GridState, GRAPHT>::Ptr node,
+                           GRAPHT::Ptr graph) {
 
     int ix = node->getState()->indexX();
     int iy = node->getState()->indexY();
@@ -63,20 +63,7 @@ namespace jsk_footstep_planner {
 
     return std::sqrt(gx * gx + gy * gy);
   }
-#endif
 
-#if 1
-  double gridHeuristicZero(SolverNode<GridState, PerceptionGridGraph>::Ptr node,
-                           PerceptionGridGraph::Ptr graph) {
-
-    int ix = node->getState()->indexX();
-    int iy = node->getState()->indexY();
-    double gx = graph->getGoalState()->indexX() - ix;
-    double gy = graph->getGoalState()->indexY() - iy;
-
-    return std::sqrt(gx * gx + gy * gy);
-  }
-#endif
 }
 
 int main(int argc, char **argv) {
@@ -85,27 +72,24 @@ int main(int argc, char **argv) {
   ros::NodeHandle n;
 
   //
-#if 0
-  OccupancyGridMap::Ptr gridmap(new OccupancyGridMap (XSIZE, YSIZE));
+  MAPT::Ptr gridmap(new MAPT (XSIZE, YSIZE));
   std::vector<int> gg;
   for(int i = 0; i < XSIZE * YSIZE; i++) {
     gg.push_back(grid[i]);
   }
   gridmap->setOccupancy(gg);
-#endif
 
-  PerceptionGridMap::Ptr gridmap(new PerceptionGridMap (XSIZE, YSIZE));
   //
-  PerceptionGridGraph::Ptr graph(new PerceptionGridGraph (gridmap));
+  GRAPHT::Ptr graph(new GRAPHT (gridmap));
   graph->setStartState(graph->getState(0, 20));
   graph->setGoalState (graph->getState(39,20));
 
   //
-  GridAStarSolver<PerceptionGridGraph> solver(graph);
+  GridAStarSolver<GRAPHT> solver(graph);
   solver.setHeuristic(boost::bind(&gridHeuristicZero, _1, _2));
 
   ros::Time st = ros::Time::now();
-  GridAStarSolver<PerceptionGridGraph>::Path path = solver.solve();
+  GridAStarSolver<GRAPHT>::Path path = solver.solve();
 
   ros::Time ed = ros::Time::now();
   ros::Duration tm = ed - st;

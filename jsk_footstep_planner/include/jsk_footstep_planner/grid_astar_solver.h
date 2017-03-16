@@ -20,16 +20,6 @@ namespace jsk_footstep_planner
 
     GridAStarSolver(GraphPtr graph): AStarSolver<GraphT>(graph) {}
 
-    using Solver<GraphT>::isOK;
-    using Solver<GraphT>::addToCloseList;
-    using Solver<GraphT>::findInCloseList;
-    using Solver<GraphT>::removeFromCloseList;
-    using Solver<GraphT>::addToOpenList;
-    using BestFirstSearchSolver<GraphT>::addToOpenList;
-    using BestFirstSearchSolver<GraphT>::isOpenListEmpty;
-    using BestFirstSearchSolver<GraphT>::popFromOpenList;
-    using AStarSolver<GraphT>::fn;
-
 #if 0
     virtual
     std::vector<typename SolverNode<State, GraphT>::Ptr>
@@ -137,7 +127,7 @@ namespace jsk_footstep_planner
     }
     virtual SolverNodePtr popFromOpenList()
     {
-      // slow implimentation
+      // slow implimentation??
       double min_cost = DBL_MAX;
       SolverNodePtr ret;
       for (typename SolveList::const_iterator it = open_list_map_.begin();
@@ -161,7 +151,7 @@ namespace jsk_footstep_planner
       if(it != open_list_map_.end()) {
         std::cerr << ";;;; warn (duplicate adding to openlist) ;;;;" << std::endl;
       }
-      node->setSortValue(fn(node));
+      node->setSortValue(AStarSolver<GraphT>::fn(node));
       open_list_map_
         .insert(typename SolveList::value_type(node->getState(), node));
     }
@@ -190,25 +180,21 @@ namespace jsk_footstep_planner
     virtual void addToCloseList(SolverNodePtr node)
     {
       // check
-      if(findInCloseList(node->getState())) {
+      if(AStarSolver<GraphT>::findInCloseList(node->getState())) {
         std::cerr << ";;;; warn (duplicate adding to closelist) ;;;;" << std::endl;
       }
       //
-      addToCloseList(node->getState(), node->getCost());
+      AStarSolver<GraphT>::addToCloseList(node->getState(), node->getCost());
     }
     virtual bool findInCloseList(SolverNodePtr node, double &cost)
     {
-      return findInCloseList(node->getState(), cost);
+      return AStarSolver<GraphT>::findInCloseList(node->getState(), cost);
     }
     virtual bool removeFromCloseList(SolverNodePtr node)
     {
-      return removeFromCloseList(node->getState());
+      return AStarSolver<GraphT>::removeFromCloseList(node->getState());
     }
-
-    //virtual bool removeFromCloseList(SolverNodePtr node)
-    //{
-    //return removeFromCloseList(node->getState());
-    //}
+    ////
     virtual bool getOpenList(std::vector<StatePtr> &lst, std::vector<float> &cost)
     {
       return false;
@@ -222,7 +208,6 @@ namespace jsk_footstep_planner
     SolveList open_list_map_;
     using Solver<GraphT>::graph_;
     using Solver<GraphT>::verbose_;
-    using BestFirstSearchSolver<GraphT>::open_list_;
   private:
 
   };
