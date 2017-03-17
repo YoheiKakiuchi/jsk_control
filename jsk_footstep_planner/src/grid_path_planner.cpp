@@ -241,6 +241,14 @@ namespace jsk_footstep_planner
     solver.setHeuristic(boost::bind(&GridPathPlanner::heuristicDistance, this, _1, _2));
 
     Solver::Path path = solver.solve();
+    if(path.size() < 1) {
+      ROS_ERROR("Failed to plan path");
+      ROS_INFO("pub marker"); //debug
+      publishMarker();        //debug
+      as_.setPreempted();
+      return;
+    }
+    ROS_INFO("solved path_size: %d", path.size());
     std::vector<Eigen::Vector3f > points;
     for(int i = 0; i < path.size(); i++) {
       //Solver::StatePtr st = path[i]->getState();

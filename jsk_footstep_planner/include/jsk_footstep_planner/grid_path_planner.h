@@ -74,7 +74,7 @@ namespace jsk_footstep_planner
 
     inline virtual void gridToPoint(const int ix, const int iy, Eigen::Vector3f &p)
     {
-      Eigen::Vector3f add(map_resolution_ * ix, map_resolution_ * iy, 0);
+      Eigen::Vector3f add(map_resolution_ * (ix + 0.5), map_resolution_ * (iy + 0.5), 0);
       p = map_offset_ + add;
     }
 
