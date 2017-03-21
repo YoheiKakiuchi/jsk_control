@@ -20,44 +20,6 @@ namespace jsk_footstep_planner
 
     GridAStarSolver(GraphPtr graph): AStarSolver<GraphT>(graph) {}
 
-#if 0
-    virtual
-    std::vector<typename SolverNode<State, GraphT>::Ptr>
-    solve(const ros::WallDuration& timeout = ros::WallDuration(1000000000.0))
-    {
-      ros::WallTime start_time = ros::WallTime::now();
-      SolverNodePtr start_state(new SolverNode<State, GraphT>(
-                                                              graph_->getStartState(),
-                                                              0, graph_));
-      addToOpenList(start_state);
-      while (!isOpenListEmpty()
-             //&& isOK(start_time, timeout)
-             ) {
-        SolverNodePtr target_node = popFromOpenList();
-        if (graph_->isGoal(target_node->getState())) {
-          std::vector<SolverNodePtr> result_path = target_node->getPathWithoutThis();
-          result_path.push_back(target_node);
-          return result_path;
-        }
-        else if (!findInCloseList(target_node->getState())) {
-          addToCloseList(target_node->getState(), target_node->getCost());
-          addToOpenList(target_node->expand(target_node, verbose_));
-        }
-        else {
-          double prev_cost = 0;
-          findInCloseList(target_node->getState(), prev_cost);
-          if(target_node->getCost() < prev_cost) {
-            removeFromCloseList(target_node->getState());
-            addToOpenList(target_node);
-          }
-        }
-      }
-      // Failed to search
-      return std::vector<SolverNodePtr>();
-    }
-#endif
-
-#if 1
     virtual
     std::vector<typename SolverNode<State, GraphT>::Ptr>
     solve(const ros::WallDuration& timeout = ros::WallDuration(1000000000.0))
@@ -93,7 +55,7 @@ namespace jsk_footstep_planner
               if(verbose_) { std::cerr << " -o"; }
               if(anode->getCost() < prev_cost) {
                 if(verbose_) { std::cerr << "-r"; }
-                removeFromOpenList(anode);
+                removeFromOpenList(anode); // replace
                 addToOpenList(anode);
               }
             } else if(findInCloseList(anode, prev_cost)) {
@@ -141,6 +103,7 @@ namespace jsk_footstep_planner
         typename SolveList::const_iterator it
           = open_list_map_.find(ret->getState());
         open_list_map_.erase(it);
+        // remove from sorted_list(pop)
       }
       return ret;
     }
@@ -154,6 +117,7 @@ namespace jsk_footstep_planner
       node->setSortValue(AStarSolver<GraphT>::fn(node));
       open_list_map_
         .insert(typename SolveList::value_type(node->getState(), node));
+      // add to sorted_list
     }
     virtual bool findInOpenList(SolverNodePtr node, double &cost)
     {
@@ -171,6 +135,7 @@ namespace jsk_footstep_planner
         = open_list_map_.find(node->getState());
       if(it != open_list_map_.end()) {
         open_list_map_.erase(it);
+        // remove from sorted_list(reconstruct)
         return true;
       } else {
         std::cerr << ";;;; warn (fail remove) ;;;;" << std::endl;
@@ -203,7 +168,7 @@ namespace jsk_footstep_planner
     {
       return false;
     }
-#endif
+
   protected:
     SolveList open_list_map_;
     using Solver<GraphT>::graph_;
