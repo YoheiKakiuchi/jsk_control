@@ -346,8 +346,8 @@ namespace jsk_footstep_planner
     }
   }
   bool FootstepPlanner::setHeuristicPathService (
-    jsk_footstep_planner::setHeuristicPath::Request& req,
-    jsk_footstep_planner::setHeuristicPath::Response& res)
+    jsk_footstep_planner::SetHeuristicPath::Request& req,
+    jsk_footstep_planner::SetHeuristicPath::Response& res)
   {
     boost::mutex::scoped_lock lock(mutex_);
     if (!graph_) {
