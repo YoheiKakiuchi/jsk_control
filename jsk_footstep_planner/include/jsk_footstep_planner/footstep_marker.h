@@ -253,6 +253,7 @@ namespace jsk_footstep_planner
 
     double foot_size_x_, foot_size_y_, foot_size_z_;
     bool disable_tf_;
+    bool use_default_goal_;
 
     boost::mutex planner_mutex_;
     PlanningState planning_state_;
