@@ -43,7 +43,7 @@
   <node pkg="jsk_footstep_planner" type="footstep_planner_node"
         name="footstep_planner" output="screen">
     <remap from="~pointcloud_model" to="$(arg input_point_cloud)" />
-    <remap from="~obstacle_model" to="$(arg obstacle_cloud)" />
+    <remap from="~obstacle_model" to="$(arg input_obstacle_cloud)" />
     <!-- use point cloud (plane estimation) for making footstep -->
     <rosparam subst_value="true">
       use_pointcloud_model: $(arg use_pointcloud)
@@ -229,6 +229,8 @@
         footstep_size_y: 0.134017
         lleg_footstep_offset: [0.015502,  0.010078, 0.0]
         rleg_footstep_offset: [0.015502, -0.010078, 0.0]
+        default_footstep_margin: 0.2
+        use_default_step_as_goal: true
       </rosparam>
     </node>
     <node pkg="jsk_footstep_controller" type="jaxon-footstep-controller.l"
