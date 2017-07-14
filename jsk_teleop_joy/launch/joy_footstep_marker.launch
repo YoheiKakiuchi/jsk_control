@@ -18,7 +18,7 @@
          'FootstepMarker':
             class: 'JoyFootstepMarker'
             args:
-              frame_id: map
+              frame_id: odom
               set_pose: set_pose
               use_tf: false
               sync_rate: 1.0

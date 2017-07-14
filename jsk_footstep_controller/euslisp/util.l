@@ -49,11 +49,13 @@ You can create `*ri*' like
           (send arr :footsteps)))
 
 (defun print-readable-coords (coords)
+  (format t "(list~%")
   (dolist (c coords)
     (format t "(make-coords :name ~A :pos ~A :rpy '~A)~%"
             (send c :name)
             (send c :worldpos)
-            (car (send c :rpy-angle)))))
+            (car (send c :rpy-angle))))
+  (format t ")~%"))
 
 (defun append-steps (now-steps next-steps)
   (cond
