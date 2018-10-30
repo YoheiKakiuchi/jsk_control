@@ -58,7 +58,9 @@ namespace jsk_footstep_planner
 
     SolverNode(StatePtr state, const double cost,
                Ptr parent, GraphPtr graph):
-      cost_(cost), state_(state), parent_(parent), graph_(graph) {}
+      cost_(cost), state_(state), parent_(parent), graph_(graph) {
+      generation_ = parent->getGeneration() + 1;
+    }
 
     SolverNode(StatePtr state, const double cost, GraphPtr graph):
       cost_(cost), state_(state), graph_(graph) {}
@@ -109,6 +111,7 @@ namespace jsk_footstep_planner
     void setGraph(GraphPtr graph) { graph_ = graph; }
     void setSortValue(double v) { sort_value_ = v; }
     void setCost(double c) { cost_ = c; }
+    long getGeneration() { return generation_; }
 
     std::vector<SolverNode::Ptr>
     getPathWithoutThis()
@@ -146,6 +149,7 @@ namespace jsk_footstep_planner
     Ptr parent_;
     GraphWeakPtr graph_;
     //std::vector<SolverNode::Ptr> memoized_path_;
+    long generation_;
   private:
   };
 
