@@ -30,4 +30,7 @@
   </class>
   <class name="JoyCmdVel" type="jsk_teleop_joy.plugin.joy_cmd_vel.JoyCmdVel">
   </class>
+
+  <class name="JoyWRS2020" type="jsk_teleop_joy.plugin.joy_wrs2020.JoyWRS2020">
+  </class>
 </library>
