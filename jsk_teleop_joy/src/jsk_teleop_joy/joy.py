@@ -42,6 +42,7 @@ def autoJoyDetect(msg):
     rospy.loginfo("auto detected as ipega")
     AUTO_DETECTED_CLASS = IpegaStatus
   else:
+    rospy.logwarn("auto detection failed len(msg.axes) = %d, len(msg.buttons) = %d"%(len(msg.axes), len(msg.buttons)))
     AUTO_DETECTED_CLASS = "UNKNOWN"
     
 class JoyManager():
