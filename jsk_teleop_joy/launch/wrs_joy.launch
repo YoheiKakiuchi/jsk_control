@@ -23,6 +23,7 @@
              publish_cmd_vel: true
              max_vel:   1.00
              max_omega: 0.26
+             command_topic: /com_text
 #        'Pose6D':
 #           class: 'JoyPose6D'
 #           args:
